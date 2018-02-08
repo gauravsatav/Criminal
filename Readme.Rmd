@@ -1,0 +1,12 @@
+---
+title: "Criminal"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+This is my attempted shot at cracking the **Find the Criminal** problem currently hosted on HackerEarth
+
