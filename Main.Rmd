@@ -1,0 +1,274 @@
+---
+title: "Predict the Criminals"
+date: "2/2/2018"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+    code_folding: hide
+    
+    
+---
+
+![](https://upsideinnovations.com/wp-content/uploads/2017/04/prisoner-jail.jpg)
+
+# Introduction
+  
+Decision which we make are a direct results of the experience we've gained over our lifetime and of many factors which led us to those experiences there are certain factors which contributed more than others. There is a greater chance of two individuals making similar decisions if they've had similar experiences which were driven by similar factors. In this problem we'll try to determine those relations between factors and decsion which led to individuals to commit a crime.
+
+The data set for this particular problem is available [here](https://www.hackerearth.com/challenge/competitive/predict-the-criminal/)
+
+We are given 2 files:
+
+*   **criminal_train**
+*   **criminal_test**
+
+The `criminal_train` dataset consist of answer to **71** variables which are related to the private information of around **45718** individuals. The last column in this dataset `Criminal` consist of either **1** or **0** and indicates whether they commited crime at some point in time. Similarly the `criminal_test` dataset contains the answers to same variables as that of `criminal_train` except that it doesen't contain the last column `Criminal` and our job is to build up a model to predict the same.
+
+
+  
+  
+# Preparation {.tabset .tabset-fade .tabset-pills}
+
+## Importing Libraries
+
+We'll make use of mutiple R libraries for visualization and to handle data. Click on *show code* to see the libraries we're required to import.
+
+```{r libraries, message=FALSE}
+
+# Data Handling
+library(dplyr)
+
+# Visualization
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(corrplot) #used for plotting co-relations.
+
+# Machine Learning Libraries
+library(randomForest)
+library(caret)
+library(glmnet)
+library(gbm)
+library(mlbench)
+library(caTools)
+```
+
+## Helper functions
+
+We'll make use of the `multiplot` function which will help us plot multiple plots on the same page. This function is imported as it is from this article in [R Cookbook](http://www.cookbook-r.com/Graphs/Multiple_graphs_on_one_page_(ggplot2)/).
+
+```{r multiplot}
+# Multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+# Overview : Understanding the file structure. {.tabset .tabset-fade .tabset-pills}
+
+## What do the variables mean?
+
+The table below shows us the meaning of the variables.
+
+```{r}
+VariableMeaning <- read.csv("Data/var.csv")
+VariableMeaning %>% kable(format = "html") %>% kable_styling(bootstrap_options = c("striped","hover","condensed"))
+```
+
+
+## Structure of Data
+
+We'll just take a quick look into the structure of the data for each of the variables. Obviously we see that the data is already encoded and has the data type `integer`. Even our target variable has its data type set to integer. We will require to change that to `factor` since we'll be using the **GBM** model to classify our target variable into one of the two levels (**1** if person is criminal and **0** otherwise )
+
+```{r}
+train <- read.csv("Data/criminal_train.csv")
+str(train)
+```
+
+
+# A summary of dataset.
+
+Lets quickly get a headcount of what is the ratio of criminals in our dataset.
+
+```{r table}
+train %>% group_by(Criminal) %>% summarise(Count=length(Criminal)) %>% 
+  kable(format = "html") %>% kable_styling(bootstrap_options = c("striped","hover","condensed"))
+
+```
+
+
+
+
+That is 1 in every `r floor(42543/12)`.
+
+## Preparing Data.
+
+We'll identify our target varible and our predictor variables by giving them seperate names. This will help in reproducing the below code for a different set of predictors and target without having to change our code by much.
+
+```{r}
+outcomeVariable <- "Criminal"
+predictorVariables <- colnames(train)[colnames(train) != outcomeVariable]
+```
+
+
+Since our problem is of the type **"Classification"**, we'll have to turn our target variables into type *factor* instead of *integer*
+
+```{r}
+train[,outcomeVariable] <- ifelse(train[,outcomeVariable]==1,'yes','nope')
+train[,outcomeVariable] <- as.factor(train[,outcomeVariable])
+```
+
+
+# Developing a model {.tabset .tabset-fade .tabset-pills}
+
+
+## Splitting the train data.
+
+Next we have to split the training data into 2 partitions. The first partition- `trainDF`  will be used to train our model and later on we can then test the performance of the model on the second partition - `testDF`  which will give us a pretty good idea about how accurate our model is.
+
+```{r splitting the data.}
+
+set.seed(1234)
+splitIndex <- createDataPartition(train[,outcomeVariable], p = .75, list = FALSE, times = 1)
+trainDF <- train[ splitIndex,]
+testDF  <- train[-splitIndex,]
+```
+
+## Choosing parameters (GBM)
+
+The GBM model takes into account 3 important parameters.
+
+* `trees`
+* `shrinkage`
+* `interaction depth`
+
+we can pass the values to these parameters manually or we can make use of the `trainControl` function which will choose the best values of these parameters. Over here, we're going to do just that.
+
+
+```{r Parameters}
+objControl <- trainControl(method='cv', number=3, returnResamp='none', summaryFunction = twoClassSummary, classProbs = TRUE)
+```
+
+## GBM Model
+
+Now that our parameters are set, we can now create a model.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+objModel <- train(trainDF[,predictorVariables], trainDF[,outcomeVariable], 
+                  method='gbm', 
+                  trControl=objControl,  
+                  metric = "ROC",
+                  preProc = c("center", "scale"))
+```
+
+After creating a model, lets have a quick look at the variables and their relative influence on our output variable
+
+```{r}
+summary(objModel)
+```
+
+We find that the 
+
+1. `GRPHLTIN` *( PRIVATE PLAN OFFERED THROUGH EMPLOYER OR UNION )*
+2. `IRFAMIN3` *(RECODE - IMP.REVISED - TOT FAM INCOME)* 
+3. `IRPINC3` *(RESP TOT INCOME (FINER CAT) - IMP REV )*
+4. `IFATHER` *( FATHER IN HOUSEHOLD )*
+5. `IRMEDICR` *(MEDICARE - IMPUTATION REVISED)*
+
+Now this is interesting but at the same time it is also what we would have expected. An individuals income and consequences of living in a household without a father figure are a few of the variables we could have expected to contribute significantly. 
+
+Also lets take a look at what tuning parameters were used.
+
+```{r}
+print(objModel)
+```
+
+
+# Evaluate Model
+
+In order to check how good our model is performing, we'll use it to predict it on our `testDF` of which we already know the values of the target variable.
+
+```{r}
+predictions <- predict(object = objModel,testDF[,predictorVariables],type = "raw")
+head(predictions)
+```
+
+
+Now lets get our accuracy score. `postResample` function in the `caret` library provides us with an easy way to compare results.
+
+```{r}
+print(postResample(pred=predictions, obs=as.factor(testDF[,outcomeVariable])))
+```
+
+That's an accuracy of above 95%.
+
+# Predicting Output
+
+We'll now import the test files
+
+```{r}
+test_Y <- read.csv("Data/criminal_test.csv")
+```
+
+lets start predicting the output.
+
+```{r}
+predictions_output <- predict(object = objModel,test_Y[,predictorVariables],type = "raw")
+predictions_output <- as.data.frame(predictions_output)
+```
+
+
+## Creating final dataframe for submission
+
+```{r}
+Submission <- bind_cols(PERID=test_Y$PERID,Criminal=predictions_output)
+colnames(Submission) <- c("PERID","Criminal")
+Submission$Criminal <- ifelse(Submission$Criminal=="nope",0,1)
+
+write.csv(Submission,"Submission.csv",row.names = FALSE)
+```
+
